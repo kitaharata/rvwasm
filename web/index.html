@@ -1,0 +1,1205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rvwasm - RV64IMAC OpenSBI emulator</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 0; background: #111; color: #eee; }
+header { padding: 12px 16px; border-bottom: 1px solid #333; }
+main { display: grid; grid-template-columns: 1fr 440px; min-height: calc(100vh - 54px); }
+#term { white-space: pre-wrap; font: 13px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 12px; overflow: auto; background: #050505; }
+aside { border-left: 1px solid #333; padding: 12px; display: flex; flex-direction: column; gap: 12px; overflow: auto; max-height: calc(100vh - 54px); }
+button, input, select { font: inherit; }
+button { padding: 6px 10px; margin: 2px; }
+.card { border: 1px solid #333; padding: 10px; border-radius: 8px; background: #181818; }
+#status, #regs { white-space: pre-wrap; font: 12px/1.35 ui-monospace, monospace; }
+label { display: block; margin: 6px 0; }
+canvas { width: 100%; image-rendering: pixelated; background: #000; border: 1px solid #333; }
+@media (max-width: 900px) {
+  header { padding: 10px 12px; line-height: 1.35; }
+  main { display: block; min-height: auto; }
+  #term { height: 46vh; min-height: 260px; max-height: 52vh; font-size: 12px; padding: 10px; overflow: auto; }
+  aside { border-left: 0; border-top: 1px solid #333; max-height: none; overflow: visible; padding: 10px; gap: 10px; }
+  .card { padding: 10px; }
+  label { margin: 8px 0; }
+  button, input, select, textarea { max-width: 100%; font-size: 16px; }
+  button { min-height: 40px; padding: 8px 10px; white-space: normal; vertical-align: top; }
+  input[type="file"] { width: 100%; }
+  canvas { height: auto; }
+}
+@media (max-width: 520px) {
+  header { font-size: 14px; }
+  #term { height: 44vh; min-height: 220px; }
+  aside { padding: 8px; }
+  .card { padding: 9px; }
+  button { margin: 3px 2px; }
+}
+</style>
+</head>
+<body>
+<header><strong>rvwasm</strong> — Go 1.23.2 js/wasm RV64IMAC emulator for OpenSBI experiments</header>
+<main>
+<div id="term"></div>
+<aside>
+<div class="card">
+<label>Firmware / ELF / raw bin<br><input type="file" id="fw"></label>
+<button id="loadFw">Load firmware</button>
+<label>Optional S-mode payload / kernel<br><input type="file" id="payload"></label>
+<button id="loadPayload">Load payload</button>
+<label>Optional virtio-blk disk image<br><input type="file" id="disk"></label>
+<button id="loadDisk">Load disk</button>
+<button id="exportDisk">Download disk</button>
+<label>Optional initrd / initramfs<br><input type="file" id="initrd"></label>
+<button id="loadInitrd">Load initrd</button>
+<label>Boot preset<br>
+<select id="bootPreset" style="width:100%; box-sizing:border-box;">
+<option value="console=ttyS0 earlycon=sbi root=/dev/vda rw">UART + virtio-blk root</option>
+<option value="console=hvc0 earlycon=sbi root=/dev/vda rw">virtio-console + virtio-blk root</option>
+<option value="console=ttyS0 earlycon=sbi root=/dev/ram0 rw">UART + initramfs root</option>
+<option value="console=hvc0 earlycon=sbi root=/dev/ram0 rw">virtio-console + initramfs root</option>
+<option value="console=ttyS0 earlycon=sbi video=simplefb:1024x768-32 nokaslr loglevel=8 root=/dev/vda rw">Verbose UART + simplefb</option>
+</select>
+</label>
+<button onclick="applyBootPreset()">Apply preset</button>
+<label>Bootargs<br><input id="bootargs" value="console=ttyS0 earlycon=sbi root=/dev/vda rw" style="width:100%; box-sizing:border-box;"></label>
+<button id="setBootargs">Set bootargs</button>
+<label>Optional DTB<br><input type="file" id="dtb"></label>
+<button id="loadDtb">Load DTB</button>
+<label>Optional ELF/System.map symbols<br><input type="file" id="symbols"></label>
+<button id="loadSymbols">Load symbols</button>
+<label>Symbol search<br><input id="symQuery" placeholder="e.g. start_kernel" style="width:100%; box-sizing:border-box;"></label>
+<button onclick="searchSymbols()">Search symbols</button>
+</div>
+<div class="card">
+<button onclick="call('rvwasmRun')">Run</button>
+<button onclick="call('rvwasmPause')">Pause</button>
+<button onclick="call('rvwasmStep', 1)">Step</button>
+<button onclick="call('rvwasmStep', 1000)">Step 1k</button>
+<button onclick="call('rvwasmReset')">Reset</button>
+<button onclick="call('rvwasmSetTrace', true)">Trace on</button>
+<button onclick="call('rvwasmSetTrace', false)">Trace off</button>
+<button onclick="call('rvwasmSetCSRTrace', true)">CSR trace on</button>
+<button onclick="call('rvwasmSetCSRTrace', false)">CSR trace off</button>
+<button onclick="showCSRTrace()">Show CSR trace</button>
+<button onclick="showCSRSummary()">CSR summary</button>
+<button onclick="call('rvwasmClearCSRTrace')">Clear CSR trace</button>
+<button onclick="showTrace()">Show trace</button>
+<button onclick="showTraceCompact()">Compact trace</button>
+<button onclick="showTraceAnnotated()">Annotated trace</button>
+<button onclick="downloadTrace()">Download trace</button>
+<button onclick="downloadTraceJSON()">Trace JSON</button>
+<button onclick="downloadTraceCSV()">Trace CSV</button>
+<button onclick="showCSRs()">Show CSR</button>
+<button onclick="showDiagnostics()">Diagnostics</button>
+<button onclick="showAccessHistogram()">MMIO histogram</button>
+<button onclick="showAccessTimeline()">Access timeline</button>
+<button onclick="showAccessTimelineCompact()">Compact access</button>
+<button onclick="showMMIODecoded()">Decoded MMIO</button>
+<button onclick="showBootPhase()">Boot phase</button>
+<button onclick="showBootTimeline()">Boot timeline</button>
+<button onclick="showDeviceProbe()">Device probe</button>
+<button onclick="showVirtqueueInspect()">Virtqueue inspect</button>
+<button onclick="showVirtqueueChains()">Descriptor chains</button>
+<button onclick="showVirtqueueGraphDOT()">Descriptor DOT</button>
+<button onclick="downloadVirtqueueDOT()">Download DOT</button>
+<button onclick="showGuestMemoryScan()">Memory scan</button>
+<button onclick="showGuestMemoryIndex()">Memory index</button>
+<button onclick="showMemoryIndexSearch()">Memory search</button>
+<button onclick="showMemoryJumpHints()">Memory jumps</button>
+<button onclick="downloadMemoryIndexJSON()">Memory index JSON</button>
+<button onclick="downloadMemoryJumpHintsJSON()">Memory jumps JSON</button>
+<button onclick="showInitcallClassifier()">Initcall classifier</button>
+<button onclick="showInitcallTimeline()">Initcall timeline</button>
+<button onclick="showDwarfLines()">DWARF lines @ PC</button>
+<button onclick="showTraceReplayReport()">Trace replay report</button>
+<button onclick="compareTraceBaseline()">Compare trace baseline</button>
+<button onclick="showBootRegressionReport()">Boot regression</button>
+<button onclick="downloadBootRegressionJSON()">Boot regression JSON</button>
+<button onclick="downloadBootRegressionMarkdown()">Boot regression MD</button>
+<button onclick="downloadBootRegressionHTML()">Boot regression HTML</button>
+<button onclick="showVirtqueueSnapshot()">Virtqueue snapshot</button>
+<button onclick="showVirtqueueAnomalies()">Virtqueue anomalies</button>
+<button onclick="showVirtqueueAnomalyHints()">Anomaly hints</button>
+<button onclick="showVirtqueueAnomalyTriage()">Anomaly triage</button>
+<button onclick="downloadVirtqueueAnomaliesJSON()">Virtqueue anomalies JSON</button>
+<button onclick="downloadVirtqueueAnomalyHintsJSON()">Anomaly hints JSON</button>
+<button onclick="downloadVirtqueueAnomalyTriageJSON()">Anomaly triage JSON</button>
+<button onclick="showDiagnosticQuery()">Diagnostic query</button>
+<button onclick="showDiagnosticPresets()">Query presets</button>
+<button onclick="saveDiagnosticQuery()">Save query</button>
+<button onclick="loadDiagnosticQuery()">Load query</button>
+<button onclick="downloadDiagnosticQueryJSON()">Query JSON</button>
+<button onclick="showDiagnosticBookmarks()">CSR/MMIO bookmarks</button>
+<button onclick="downloadDiagnosticBookmarksJSON()">Bookmarks JSON</button>
+<button onclick="downloadDiagnosticPresetsJSON()">Preset JSON</button>
+<button onclick="downloadShareReportMarkdown()">Share report MD</button>
+<button onclick="downloadShareReportJSON()">Share report JSON</button>
+<button onclick="downloadShareReportHTML()">Share report HTML</button>
+<button onclick="showTriageDashboard()">Triage dashboard</button>
+<button onclick="downloadTriageDashboardJSON()">Triage JSON</button>
+<button onclick="showStopCauseRanking()">Stop-cause ranking</button>
+<button onclick="showStopCauseEvidence()">Stop-cause evidence</button>
+<button onclick="downloadStopCauseEvidenceJSON()">Stop evidence JSON</button>
+<button onclick="showStopCauseChecklist()">Stop checklist</button>
+<button onclick="downloadStopCauseChecklistJSON()">Stop checklist JSON</button>
+<button onclick="showAutoBreakpointSuggestions()">Auto break/watch suggestions</button>
+<button onclick="downloadAutoBreakpointSuggestionsJSON()">Break suggestions JSON</button>
+<button onclick="saveTriageBaseline()">Save triage baseline</button>
+<button onclick="loadTriageBaseline()">Load triage baseline</button>
+<button onclick="showTriageDiff()">Triage diff</button>
+<button onclick="downloadTriageDiffJSON()">Triage diff JSON</button>
+<button onclick="savePresetBaseline()">Save preset baseline</button>
+<button onclick="comparePresetBaseline()">Compare preset baseline</button>
+<button onclick="downloadPresetCompareJSON()">Preset compare JSON</button>
+<button onclick="showMemoryObjectDump()">Memory dump hits</button>
+<button onclick="downloadMemoryObjectDumpJSON()">Memory dump JSON</button>
+<button onclick="showMemoryRangeDump()">Memory range dump</button>
+<button onclick="downloadMemoryRangeDumpJSON()">Memory range JSON</button>
+<button onclick="downloadShareReportRedactedMarkdown()">Redacted share MD</button>
+<button onclick="downloadShareReportRedactedJSON()">Redacted share JSON</button>
+<button onclick="downloadShareReportRedactedHTML()">Redacted share HTML</button>
+<button onclick="showRedactionOptions()">Show redaction options</button>
+<button onclick="call('rvwasmCaptureMemoryScan')">Capture memory scan</button>
+<button onclick="diffMemoryScan()">Diff memory scan</button>
+<button onclick="showDwarfSourceContext()">DWARF source context</button>
+<button onclick="showDwarfLineSummary()">DWARF file summary</button>
+<button onclick="showPanicSummary()">Panic summary</button>
+<button onclick="downloadBootAnalysisJSON()">Boot analysis JSON</button>
+<button onclick="showDmesg()">Dmesg extract</button>
+<button onclick="call('rvwasmClearAccessTimeline')">Clear timeline</button>
+<button onclick="call('rvwasmClearAccessHistogram')">Clear histogram</button>
+<button onclick="downloadDiagnosticsJSON()">Download diag JSON</button>
+<button onclick="showArtifactManifest()">Artifact manifest</button>
+<button onclick="downloadArtifactManifestJSON()">Manifest JSON</button>
+<button onclick="saveArtifactManifestBaseline()">Save manifest baseline</button>
+<button onclick="showArtifactManifestDiff()">Manifest diff</button>
+<button onclick="downloadArtifactManifestDiffJSON()">Manifest diff JSON</button>
+<button onclick="downloadDiagnosticBundleJSON()">Diagnostic bundle JSON</button>
+<button onclick="downloadDiagnosticBundleCompressedJSON()">Compressed bundle JSON</button>
+<button onclick="showProvenanceReport()">Provenance</button>
+<button onclick="downloadProvenanceJSON()">Provenance JSON</button>
+<button onclick="decodeBundleText()">Decode bundle</button>
+<button onclick="compareBundleBaseline()">Bundle compare</button>
+<button onclick="downloadBundleCompareJSON()">Bundle compare JSON</button>
+<button onclick="downloadRegressionHandoffMarkdown()">Handoff MD</button>
+<button onclick="showReproductionPlan()">Repro plan</button>
+<button onclick="downloadReproductionPlanMarkdown()">Repro MD</button>
+<button onclick="downloadReproductionPlanJSON()">Repro JSON</button>
+<button onclick="showLogSignature()">Log signature</button>
+<button onclick="saveLogSignatureBaseline()">Save log signature</button>
+<button onclick="loadLogSignatureBaseline()">Load log signature</button>
+<button onclick="compareLogSignatureBaseline()">Compare log signature</button>
+<button onclick="downloadLogSignatureJSON()">Log signature JSON</button>
+<button onclick="downloadLogSignatureCompareJSON()">Log compare JSON</button>
+<button onclick="showBundleIntegrity()">Bundle integrity</button>
+<button onclick="downloadBundleIntegrityJSON()">Integrity JSON</button>
+<button onclick="showReproValidation()">Repro validation</button>
+<button onclick="downloadReproValidationJSON()">Repro validation JSON</button>
+<button onclick="showCISummary()">CI summary</button>
+<button onclick="downloadCISummaryJSON()">CI summary JSON</button>
+<button onclick="showCIGateReport()">CI gate</button>
+<button onclick="downloadCIGateReportJSON()">CI gate JSON</button>
+<button onclick="showCIActionChecklist()">CI checklist</button>
+<button onclick="downloadCIActionChecklistJSON()">CI checklist JSON</button>
+<button onclick="showCIPolicyTemplates()">CI policy templates</button>
+<button onclick="downloadCIPolicyTemplatesJSON()">Policy templates JSON</button>
+<button onclick="downloadCIPolicyTemplateJSON()">Policy template JSON</button>
+<button onclick="showHeadlessRunnerSpec()">Headless runner spec</button>
+<button onclick="downloadHeadlessRunnerSpecJSON()">Runner spec JSON</button>
+<button onclick="downloadHeadlessSmokeScript()">Headless smoke script</button>
+<button onclick="applyAutoBreakSuggestions()">Apply auto breaks</button>
+<button onclick="showAutoBreakApplyReport()">Auto break verify</button>
+<button onclick="showDeviceJSON()">Device JSON</button>
+<button onclick="showSymbols()">Symbols @ PC</button>
+<button onclick="call('rvwasmSetSBIShim', true)">SBI shim on</button>
+<button onclick="call('rvwasmSetSBIShim', false)">SBI shim off</button>
+<button onclick="runSmokePreset()">Smoke preset</button>
+<button onclick="runSmokeMatrix()">Smoke matrix</button>
+<button onclick="downloadSmokeMatrixJSON()">Smoke matrix JSON</button>
+<button onclick="downloadSmokeMatrixMarkdown()">Smoke matrix MD</button>
+<button onclick="downloadSmokeMatrixHTML()">Smoke matrix HTML</button>
+<button onclick="saveSmokeBaseline()">Save smoke baseline</button>
+<button onclick="compareSmokeBaseline()">Compare smoke baseline</button>
+<button onclick="downloadSmokeCompareJSON()">Smoke compare JSON</button>
+<button onclick="showSmokeFailureClusters()">Smoke clusters</button>
+<button onclick="downloadSmokeFailureClustersJSON()">Smoke clusters JSON</button>
+<button onclick="call('rvwasmSetProfile', true)">PC profile on</button>
+<button onclick="call('rvwasmSetProfile', false)">PC profile off</button>
+<button onclick="showPCProfile()">Show PC profile</button>
+<button onclick="call('rvwasmClearProfile')">Clear profile</button>
+<button onclick="call('rvwasmCaptureSnapshot')">Capture snapshot</button>
+<button onclick="diffSnapshot()">Diff snapshot</button>
+<input id="smokeSteps" value="200000" style="width:32%; box-sizing:border-box;" title="smoke steps">
+<button onclick="refresh()">Refresh</button>
+<label>Hart count / active hart<br>
+<input id="hartCount" value="1" style="width:42%; box-sizing:border-box;">
+<input id="activeHart" value="0" style="width:42%; box-sizing:border-box;">
+</label>
+<button onclick="setHartCount()">Set hart count</button>
+<button onclick="setActiveHart()">View hart</button>
+</div>
+<div class="card">
+<strong>Breakpoints / watchpoints</strong>
+<label>PC breakpoint / after hits / mode / hart<br>
+<input id="breakAddr" placeholder="80000000" style="width:34%; box-sizing:border-box;">
+<input id="breakAfter" placeholder="after" style="width:18%; box-sizing:border-box;">
+<input id="breakMode" placeholder="u/s/m" style="width:18%; box-sizing:border-box;">
+<input id="breakHart" placeholder="hart" style="width:18%; box-sizing:border-box;">
+</label>
+<button onclick="addBreakpoint()">Add breakpoint</button>
+<button onclick="clearBreakpoints()">Clear breakpoints</button>
+<button onclick="listBreakpoints()">List</button>
+<label>Write watchpoint addr / length<br>
+<input id="watchAddr" placeholder="86000000" style="width:46%; box-sizing:border-box;">
+<input id="watchLen" placeholder="1000" style="width:46%; box-sizing:border-box;">
+</label>
+<button onclick="addWatchpoint()">Add write watchpoint</button>
+<button onclick="clearWatchpoints()">Clear write watchpoints</button>
+<button onclick="listWatchpoints()">List write</button>
+<label>Read watchpoint addr / length<br>
+<input id="readWatchAddr" placeholder="10001000" style="width:46%; box-sizing:border-box;">
+<input id="readWatchLen" placeholder="4" style="width:46%; box-sizing:border-box;">
+</label>
+<button onclick="addReadWatchpoint()">Add read watchpoint</button>
+<button onclick="clearReadWatchpoints()">Clear read watchpoints</button>
+<button onclick="listReadWatchpoints()">List read</button>
+<button onclick="showWatchpointHits()">Watchpoint hits</button>
+<button onclick="downloadWatchpointHitsJSON()">Watch hits JSON</button>
+<button onclick="call('rvwasmClearWatchpointHits')">Clear hit timeline</button>
+<label>Trace filter<br><input id="traceFilter" placeholder="trap / ecall / pc=..." style="width:100%; box-sizing:border-box;"></label>
+<button onclick="setTraceFilter()">Set trace filter</button>
+<label>Integrated diagnostic query<br><input id="diagQuery" placeholder="virtio QueueReady / panic / satp / 0x80200000" style="width:100%; box-sizing:border-box;"></label>
+<label>Trace baseline compare<br>
+<textarea id="traceBaseline" placeholder="Paste a previous rvwasm trace here to compare against the current trace" style="width:100%; height:80px; box-sizing:border-box;"></textarea>
+</label>
+<label>Linux panic/oops log analyzer<br>
+<textarea id="oopsLog" placeholder="Paste panic/oops log or trace with PC addresses" style="width:100%; height:80px; box-sizing:border-box;"></textarea>
+</label>
+<button onclick="saveTraceBaseline()">Save current trace as baseline</button>
+<button onclick="loadTraceBaseline()">Load saved baseline</button>
+<button onclick="clearTraceBaseline()">Clear saved baseline</button>
+<button onclick="analyzeLog()">Analyze log symbols</button>
+</div>
+<div class="card">
+<strong>Triage / redaction / memory helpers</strong>
+<label>Triage baseline JSON<br><textarea id="triageBaseline" rows="4" style="width:100%; box-sizing:border-box;" placeholder="Save or paste rvwasm-triage-dashboard.json"></textarea></label>
+<label>Redaction options JSON<br><textarea id="redactionOptions" rows="4" style="width:100%; box-sizing:border-box;">{"replace_ips":true,"replace_macs":true,"replace_emails":true,"replace_long_hex":false}</textarea></label>
+<label>Diagnostic bundle baseline / compressed import<br><textarea id="bundleBaseline" rows="5" style="width:100%; box-sizing:border-box;" placeholder="Paste rvwasm-diagnostic-bundle.json or compressed bundle JSON/base64 here"></textarea></label>
+<label>Log signature baseline JSON<br><textarea id="logSignatureBaseline" rows="4" style="width:100%; box-sizing:border-box;" placeholder="Paste rvwasm-log-signature.json here"></textarea></label>
+<label>Minimal repro ZIP<br><input type="file" id="reproZip"></label>
+<button onclick="inspectReproZip()">Inspect repro ZIP</button>
+<button onclick="downloadReproZipInspectionJSON()">Repro ZIP JSON</button>
+<button onclick="downloadGitHubMatrixWorkflow()">Matrix workflow YAML</button>
+<button onclick="downloadBundleTrendChartJSON()">Trend chart JSON</button>
+<button onclick="downloadBundleTrendCSV()">Trend CSV</button>
+<label>Memory range addr / len<br>
+<input id="memRangeAddr" placeholder="0x80200000" style="width:58%; box-sizing:border-box;">
+<input id="memRangeLen" value="256" style="width:38%; box-sizing:border-box;">
+</label>
+<label>Smoke matrix presets<br><input id="smokePresetList" value="uart-blk,hvc-blk,uart-initrd,hvc-initrd,simplefb" style="width:100%; box-sizing:border-box;"></label>
+</div>
+<div class="card">
+<strong>simple-framebuffer</strong>
+<canvas id="fb" width="1024" height="768"></canvas>
+<button onclick="renderFramebuffer()">Render framebuffer</button>
+<button onclick="downloadFramebuffer()">Download framebuffer RGBA</button>
+<button onclick="downloadFramebufferPNG()">Download PNG</button>
+<button onclick="call('rvwasmClearFramebuffer')">Clear framebuffer</button>
+</div>
+<div class="card">
+<strong>Memory dump</strong>
+<input id="dumpAddr" value="0x80000000" style="width:56%; box-sizing:border-box; margin-top:6px;">
+<input id="dumpLen" value="4096" style="width:28%; box-sizing:border-box; margin-top:6px;">
+<button onclick="downloadMem()">Download</button>
+</div>
+<div class="card">
+<strong>virtio-rng</strong>
+<input id="rngSeed" placeholder="hex seed, e.g. 0x1234" style="width:100%; box-sizing:border-box; margin-top:6px;">
+<button onclick="setRNGSeed()">Set deterministic seed</button>
+</div>
+<div class="card">
+<strong>UART / virtio-console input</strong>
+<input id="uartInput" placeholder="text to send to guest serial devices" style="width:100%; box-sizing:border-box; margin-top:6px;">
+<button onclick="sendUART()">Send</button>
+<button onclick="sendUART('\n')">Enter</button>
+</div>
+<div class="card">
+<strong>virtio-input debug</strong>
+<label>Key code / action<br>
+<input id="inputKeyCode" value="28" style="width:46%; box-sizing:border-box; margin-top:6px;">
+<select id="inputKeyDown" style="width:46%; box-sizing:border-box; margin-top:6px;"><option value="1">down</option><option value="0">up</option></select>
+</label>
+<button onclick="injectInputKey()">Inject key</button>
+<label>Raw event type / code / value<br>
+<input id="inputType" value="1" style="width:30%; box-sizing:border-box; margin-top:6px;">
+<input id="inputCode" value="28" style="width:30%; box-sizing:border-box; margin-top:6px;">
+<input id="inputValue" value="1" style="width:30%; box-sizing:border-box; margin-top:6px;">
+</label>
+<button onclick="injectInputEvent()">Inject raw event</button>
+</div>
+<div class="card">
+<strong>virtio-gpu debug</strong>
+<button onclick="showVirtioGPU()">Show virtio-gpu state</button>
+<div style="font-size:12px;color:#bbb;margin-top:6px;">MMIO 0x10006000, IRQ 6, 2D control + cursor queues.</div>
+</div>
+<div class="card">
+<strong>virtio-net debug</strong>
+<input id="netHex" placeholder="ethernet frame hex, e.g. ffffffffffff0272767700010806..." style="width:100%; box-sizing:border-box; margin-top:6px;">
+<button onclick="injectNetHex()">Inject RX frame</button>
+<button onclick="showNetTx()">Show TX frames</button>
+</div>
+<div class="card"><strong>Status</strong><div id="status"></div></div>
+<div class="card"><strong>Registers</strong><div id="regs"></div></div>
+</aside>
+</main>
+<script src="wasm_exec.js"></script>
+<script>
+const term = document.getElementById("term");
+window.appendTerminal = (s) => { term.textContent += s; term.scrollTop = term.scrollHeight; };
+async function boot() {
+  const go = new Go();
+  const res = await WebAssembly.instantiateStreaming(fetch("riscv.wasm"), go.importObject);
+  go.run(res.instance);
+}
+async function readFileInput(id) {
+  const f = document.getElementById(id).files[0];
+  if (!f) throw new Error("no file selected");
+  return new Uint8Array(await f.arrayBuffer());
+}
+async function loadFw() {
+  try { appendTerminal("\n[ui] " + window.rvwasmLoadFirmware(await readFileInput("fw")) + "\n"); refresh(); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+async function loadPayload() {
+  try { appendTerminal("\n[ui] " + window.rvwasmLoadPayload(await readFileInput("payload")) + "\n"); refresh(); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+async function loadDisk() {
+  try { appendTerminal("\n[ui] " + window.rvwasmLoadDisk(await readFileInput("disk")) + "\n"); refresh(); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function exportDisk() {
+  try {
+    const arr = window.rvwasmExportDisk();
+    if (!arr) throw new Error("no disk");
+    downloadBlob("rvwasm-disk.img", arr, "application/octet-stream");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+async function loadInitrd() {
+  try { appendTerminal("\n[ui] " + window.rvwasmLoadInitrd(await readFileInput("initrd")) + "\n"); refresh(); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function applyBootPreset() {
+  const s = document.getElementById("bootPreset").value;
+  document.getElementById("bootargs").value = s;
+  setBootargs();
+}
+function setBootargs() {
+  try { appendTerminal("\n[ui] " + window.rvwasmSetBootArgs(document.getElementById("bootargs").value) + "\n"); refresh(); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+async function loadDtb() {
+  try { appendTerminal("\n[ui] " + window.rvwasmLoadDTB(await readFileInput("dtb")) + "\n"); refresh(); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+async function loadSymbols() {
+  try {
+    const f = document.getElementById("symbols").files[0];
+    if (!f) throw new Error("no file selected");
+    const data = new Uint8Array(await f.arrayBuffer());
+    appendTerminal("\n[ui] " + window.rvwasmLoadSymbols(data, f.name) + "\n");
+    refresh();
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function call(name, arg) {
+  try { appendTerminal("\n[ui] " + window[name](arg) + "\n"); refresh(); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadBlob(name, data, type) {
+  const blob = new Blob([data], {type});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+function downloadMem() {
+  try {
+    const addr = document.getElementById("dumpAddr").value;
+    const len = parseInt(document.getElementById("dumpLen").value || "0", 10);
+    const arr = window.rvwasmDumpMemory(addr, len);
+    if (!arr) throw new Error("dump failed");
+    downloadBlob("rvwasm-mem-" + addr.replace(/^0x/, "") + ".bin", arr, "application/octet-stream");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function sendUART(extra) {
+  const el = document.getElementById("uartInput");
+  const s = extra !== undefined ? extra : el.value;
+  if (window.rvwasmInput) appendTerminal("\n[ui] " + window.rvwasmInput(s) + "\n");
+  if (extra === undefined) el.value = "";
+}
+function showTrace() {
+  const f = document.getElementById("traceFilter").value || "";
+  if (window.rvwasmTrace) appendTerminal("\n[trace]\n" + window.rvwasmTrace(128, f));
+}
+function showTraceCompact() {
+  const f = document.getElementById("traceFilter").value || "";
+  if (window.rvwasmTraceCompact) appendTerminal("\n[compact-trace]\n" + window.rvwasmTraceCompact(256, f));
+}
+function showTraceAnnotated() {
+  const f = document.getElementById("traceFilter").value || "";
+  if (window.rvwasmTraceAnnotated) appendTerminal("\n[annotated-trace]\n" + window.rvwasmTraceAnnotated(256, f));
+}
+function setTraceFilter() {
+  const f = document.getElementById("traceFilter").value || "";
+  if (window.rvwasmSetTraceFilter) appendTerminal("\n[ui] " + window.rvwasmSetTraceFilter(f) + "\n");
+}
+function showCSRs() {
+  if (window.rvwasmCSRs) appendTerminal("\n[csr]\n" + window.rvwasmCSRs());
+}
+function showDiagnostics() {
+  if (window.rvwasmDiagnostics) appendTerminal("\n[diagnostics]\n" + window.rvwasmDiagnostics());
+}
+function getDiagnosticsJSON() {
+  return window.rvwasmExportDiagnosticsJSON ? window.rvwasmExportDiagnosticsJSON() : "{}";
+}
+function showDeviceJSON() {
+  appendTerminal("\n[device-json]\n" + getDiagnosticsJSON() + "\n");
+}
+function downloadDiagnosticsJSON() {
+  try { downloadBlob("rvwasm-diagnostics.json", getDiagnosticsJSON(), "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showArtifactManifest() {
+  if (window.rvwasmArtifactManifest) appendTerminal("\n[artifact-manifest]\n" + window.rvwasmArtifactManifest());
+}
+function downloadArtifactManifestJSON() {
+  try { downloadBlob("rvwasm-artifact-manifest.json", window.rvwasmArtifactManifestJSON ? window.rvwasmArtifactManifestJSON() : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function saveArtifactManifestBaseline() {
+  try {
+    const text = window.rvwasmArtifactManifestJSON ? window.rvwasmArtifactManifestJSON() : "{}";
+    localStorage.setItem("rvwasm.artifactManifestBaseline", text);
+    appendTerminal("\n[ui] saved artifact manifest baseline (" + text.length + " bytes)\n");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function artifactManifestBaselineText() {
+  return localStorage.getItem("rvwasm.artifactManifestBaseline") || "";
+}
+function showArtifactManifestDiff() {
+  if (window.rvwasmArtifactManifestDiff) appendTerminal("\n[artifact-manifest-diff]\n" + window.rvwasmArtifactManifestDiff(artifactManifestBaselineText()));
+}
+function downloadArtifactManifestDiffJSON() {
+  try { downloadBlob("rvwasm-artifact-manifest-diff.json", window.rvwasmArtifactManifestDiffJSON ? window.rvwasmArtifactManifestDiffJSON(artifactManifestBaselineText()) : "[]", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadDiagnosticBundleJSON() {
+  try { downloadBlob("rvwasm-diagnostic-bundle.json", window.rvwasmDiagnosticBundleJSON ? window.rvwasmDiagnosticBundleJSON(diagnosticQueryText()) : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadDiagnosticBundleCompressedJSON() {
+  try { downloadBlob("rvwasm-diagnostic-bundle-compressed.json", window.rvwasmDiagnosticBundleCompressedJSON ? window.rvwasmDiagnosticBundleCompressedJSON(diagnosticQueryText()) : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function bundleBaselineText() {
+  const el = document.getElementById("bundleBaseline");
+  return el ? el.value : "";
+}
+function decodeBundleText() {
+  try {
+    const out = window.rvwasmDecodeDiagnosticBundle ? window.rvwasmDecodeDiagnosticBundle(bundleBaselineText()) : "{}";
+    appendTerminal("\n[decoded-diagnostic-bundle]\n" + out + "\n");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function compareBundleBaseline() {
+  try {
+    const out = window.rvwasmCompareDiagnosticBundle ? window.rvwasmCompareDiagnosticBundle(bundleBaselineText(), diagnosticQueryText()) : "<unavailable>";
+    appendTerminal("\n[diagnostic-bundle-compare]\n" + out + "\n");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadBundleCompareJSON() {
+  try { downloadBlob("rvwasm-diagnostic-bundle-compare.json", window.rvwasmCompareDiagnosticBundleJSON ? window.rvwasmCompareDiagnosticBundleJSON(bundleBaselineText(), diagnosticQueryText()) : "[]", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+async function readReproZipBytes() {
+  const f = document.getElementById("reproZip") && document.getElementById("reproZip").files[0];
+  if (!f) throw new Error("no minimal repro zip selected");
+  return new Uint8Array(await f.arrayBuffer());
+}
+async function inspectReproZip() {
+  try {
+    const data = await readReproZipBytes();
+    appendTerminal("\n[repro-zip-inspection]\n" + (window.rvwasmInspectReproZip ? window.rvwasmInspectReproZip(data) : "<unavailable>") + "\n");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+async function downloadReproZipInspectionJSON() {
+  try {
+    const data = await readReproZipBytes();
+    downloadBlob("rvwasm-repro-zip-inspection.json", window.rvwasmInspectReproZipJSON ? window.rvwasmInspectReproZipJSON(data) : "{}", "application/json");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadGitHubMatrixWorkflow() {
+  try { downloadBlob("rvwasm-smoke-matrix.yml", window.rvwasmGitHubActionsMatrixWorkflow ? window.rvwasmGitHubActionsMatrixWorkflow("linux-boot", smokePresetListText()) : "", "text/yaml"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadBundleTrendChartJSON() {
+  try { downloadBlob("rvwasm-bundle-trend-chart.json", window.rvwasmBundleTrendChartJSON ? window.rvwasmBundleTrendChartJSON(bundleBaselineText()) : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadBundleTrendCSV() {
+  try { downloadBlob("rvwasm-bundle-trend.csv", window.rvwasmBundleTrendCSV ? window.rvwasmBundleTrendCSV(bundleBaselineText()) : "", "text/csv"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showProvenanceReport() {
+  if (window.rvwasmProvenanceReport) appendTerminal("\n[provenance]\n" + window.rvwasmProvenanceReport(diagnosticQueryText()) + "\n");
+}
+function downloadProvenanceJSON() {
+  try { downloadBlob("rvwasm-provenance.json", window.rvwasmProvenanceReportJSON ? window.rvwasmProvenanceReportJSON(diagnosticQueryText()) : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadRegressionHandoffMarkdown() {
+  try { downloadBlob("rvwasm-regression-handoff.md", window.rvwasmRegressionHandoffMarkdown ? window.rvwasmRegressionHandoffMarkdown(bundleBaselineText(), diagnosticQueryText()) : "", "text/markdown"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function smokePresetListText() {
+  const el = document.getElementById("smokePresetList");
+  return el ? el.value : "uart-blk,hvc-blk,uart-initrd,hvc-initrd,simplefb";
+}
+function primarySmokePreset() {
+  const raw = smokePresetListText().split(",").map(s => s.trim()).filter(Boolean);
+  return raw.length ? raw[0] : "uart-blk";
+}
+function showReproductionPlan() {
+  try { appendTerminal("\n[reproduction-plan]\n" + (window.rvwasmReproductionPlan ? window.rvwasmReproductionPlan(primarySmokePreset()) : "<unavailable>") + "\n"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadReproductionPlanMarkdown() {
+  try { downloadBlob("rvwasm-reproduction-plan.md", window.rvwasmReproductionPlanMarkdown ? window.rvwasmReproductionPlanMarkdown(primarySmokePreset()) : "", "text/markdown"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadReproductionPlanJSON() {
+  try { downloadBlob("rvwasm-reproduction-plan.json", window.rvwasmReproductionPlanJSON ? window.rvwasmReproductionPlanJSON(primarySmokePreset()) : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function logSignatureBaselineText() {
+  const el = document.getElementById("logSignatureBaseline");
+  return el ? el.value : "";
+}
+function showLogSignature() {
+  try { appendTerminal("\n[log-signature]\n" + (window.rvwasmLogSignature ? window.rvwasmLogSignature() : "<unavailable>") + "\n"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function saveLogSignatureBaseline() {
+  try {
+    const text = window.rvwasmLogSignatureJSON ? window.rvwasmLogSignatureJSON() : "{}";
+    localStorage.setItem("rvwasm.logSignatureBaseline", text);
+    const el = document.getElementById("logSignatureBaseline");
+    if (el) el.value = text;
+    appendTerminal("\n[ui] saved log signature baseline (" + text.length + " bytes)\n");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function loadLogSignatureBaseline() {
+  try {
+    const text = localStorage.getItem("rvwasm.logSignatureBaseline") || "";
+    const el = document.getElementById("logSignatureBaseline");
+    if (el) el.value = text;
+    appendTerminal("\n[ui] loaded log signature baseline (" + text.length + " bytes)\n");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function compareLogSignatureBaseline() {
+  try { appendTerminal("\n[log-signature-compare]\n" + (window.rvwasmCompareLogSignature ? window.rvwasmCompareLogSignature(logSignatureBaselineText()) : "<unavailable>") + "\n"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadLogSignatureJSON() {
+  try { downloadBlob("rvwasm-log-signature.json", window.rvwasmLogSignatureJSON ? window.rvwasmLogSignatureJSON() : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadLogSignatureCompareJSON() {
+  try { downloadBlob("rvwasm-log-signature-compare.json", window.rvwasmCompareLogSignatureJSON ? window.rvwasmCompareLogSignatureJSON(logSignatureBaselineText()) : "[]", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showBundleIntegrity() {
+  try { appendTerminal("\n[bundle-integrity]\n" + (window.rvwasmBundleIntegrity ? window.rvwasmBundleIntegrity() : "<unavailable>") + "\n"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadBundleIntegrityJSON() {
+  try { downloadBlob("rvwasm-bundle-integrity.json", window.rvwasmBundleIntegrityJSON ? window.rvwasmBundleIntegrityJSON() : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showReproValidation() {
+  try { appendTerminal("\n[repro-validation]\n" + (window.rvwasmReproValidation ? window.rvwasmReproValidation(primarySmokePreset()) : "<unavailable>") + "\n"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadReproValidationJSON() {
+  try { downloadBlob("rvwasm-repro-validation.json", window.rvwasmReproValidationJSON ? window.rvwasmReproValidationJSON(primarySmokePreset()) : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showCISummary() {
+  try { appendTerminal("\n[ci-summary]\n" + (window.rvwasmCISummary ? window.rvwasmCISummary() : "<unavailable>") + "\n"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadCISummaryJSON() {
+  try { downloadBlob("rvwasm-ci-summary.json", window.rvwasmCISummaryJSON ? window.rvwasmCISummaryJSON() : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showHeadlessRunnerSpec() {
+  try { appendTerminal("\n[headless-runner-spec]\n" + (window.rvwasmHeadlessRunnerSpec ? window.rvwasmHeadlessRunnerSpec(parseInt(document.getElementById("smokeSteps").value || "200000", 10), smokePresetListText()) : "<unavailable>") + "\n"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadHeadlessRunnerSpecJSON() {
+  try { downloadBlob("rvwasm-headless-runner-spec.json", window.rvwasmHeadlessRunnerSpecJSON ? window.rvwasmHeadlessRunnerSpecJSON(parseInt(document.getElementById("smokeSteps").value || "200000", 10), smokePresetListText()) : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadHeadlessSmokeScript() {
+  try { downloadBlob("rvwasm-headless-smoke.sh", window.rvwasmHeadlessSmokeScript ? window.rvwasmHeadlessSmokeScript(parseInt(document.getElementById("smokeSteps").value || "200000", 10), smokePresetListText()) : "", "text/x-shellscript"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showAutoBreakApplyReport() {
+  try {
+    const n = parseInt(prompt("Verify how many auto break/watch suggestions?", "8") || "8", 10);
+    appendTerminal("\n[auto-break-verify]\n" + (window.rvwasmAutoBreakpointApplyReport ? window.rvwasmAutoBreakpointApplyReport(n) : "<unavailable>") + "\n");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function applyAutoBreakSuggestions() {
+  try {
+    const n = parseInt(prompt("Apply how many auto break/watch suggestions?", "8") || "8", 10);
+    const out = window.rvwasmApplyAutoBreakpointSuggestions ? window.rvwasmApplyAutoBreakpointSuggestions(n) : "<unavailable>";
+    appendTerminal("\n[apply-auto-breakpoints]\n" + out + "\n");
+    refresh();
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showSymbols() {
+  if (window.rvwasmSymbolsAround) appendTerminal("\n[symbols]\n" + window.rvwasmSymbolsAround(""));
+}
+function searchSymbols() {
+  const q = document.getElementById("symQuery").value;
+  if (window.rvwasmSymbolSearch) appendTerminal("\n[symbol-search]\n" + window.rvwasmSymbolSearch(q));
+}
+function setHartCount() {
+  const n = parseInt(document.getElementById("hartCount").value || "1", 10);
+  if (window.rvwasmSetHartCount) appendTerminal("\n[ui] " + window.rvwasmSetHartCount(n) + "\n");
+  refresh();
+}
+function setActiveHart() {
+  const n = parseInt(document.getElementById("activeHart").value || "0", 10);
+  if (window.rvwasmSetActiveHart) appendTerminal("\n[ui] " + window.rvwasmSetActiveHart(n) + "\n");
+  refresh();
+}
+function addBreakpoint() {
+  const a = document.getElementById("breakAddr").value;
+  const after = document.getElementById("breakAfter").value || "0";
+  const mode = document.getElementById("breakMode").value || "";
+  const hart = parseInt(document.getElementById("breakHart").value || "-1", 10);
+  if (window.rvwasmAddBreakpoint) appendTerminal("\n[ui] " + window.rvwasmAddBreakpoint(a, after, mode, hart) + "\n");
+  refresh();
+}
+function clearBreakpoints() {
+  if (window.rvwasmClearBreakpoints) appendTerminal("\n[ui] " + window.rvwasmClearBreakpoints() + "\n");
+  refresh();
+}
+function listBreakpoints() {
+  if (window.rvwasmBreakpoints) appendTerminal("\n[breakpoints]\n" + window.rvwasmBreakpoints());
+}
+function addWatchpoint() {
+  const a = document.getElementById("watchAddr").value;
+  const l = document.getElementById("watchLen").value;
+  if (window.rvwasmAddWatchpoint) appendTerminal("\n[ui] " + window.rvwasmAddWatchpoint(a, l) + "\n");
+  refresh();
+}
+function clearWatchpoints() {
+  if (window.rvwasmClearWatchpoints) appendTerminal("\n[ui] " + window.rvwasmClearWatchpoints() + "\n");
+  refresh();
+}
+function listWatchpoints() {
+  if (window.rvwasmWatchpoints) appendTerminal("\n[watchpoints]\n" + window.rvwasmWatchpoints());
+}
+function addReadWatchpoint() {
+  const a = document.getElementById("readWatchAddr").value;
+  const l = document.getElementById("readWatchLen").value;
+  if (window.rvwasmAddReadWatchpoint) appendTerminal("\n[ui] " + window.rvwasmAddReadWatchpoint(a, l) + "\n");
+  refresh();
+}
+function clearReadWatchpoints() {
+  if (window.rvwasmClearReadWatchpoints) appendTerminal("\n[ui] " + window.rvwasmClearReadWatchpoints() + "\n");
+  refresh();
+}
+function listReadWatchpoints() {
+  if (window.rvwasmReadWatchpoints) appendTerminal("\n[read-watchpoints]\n" + window.rvwasmReadWatchpoints());
+}
+function showWatchpointHits() {
+  const f = document.getElementById("traceFilter").value || "";
+  if (window.rvwasmWatchpointHits) appendTerminal("\n[watchpoint-hits]\n" + window.rvwasmWatchpointHits(128, f));
+}
+function downloadWatchpointHitsJSON() {
+  try { downloadBlob("rvwasm-watchpoint-hits.json", window.rvwasmWatchpointHitsJSON ? window.rvwasmWatchpointHitsJSON(256) : "[]", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showCSRTrace() {
+  if (window.rvwasmCSRTrace) appendTerminal("\n[csr-trace]\n" + window.rvwasmCSRTrace(128));
+}
+function showCSRSummary() {
+  if (window.rvwasmCSRSummary) appendTerminal("\n[csr-summary]\n" + window.rvwasmCSRSummary(32));
+}
+function showAccessHistogram() {
+  if (window.rvwasmAccessHistogram) appendTerminal("\n[access-histogram]\n" + window.rvwasmAccessHistogram());
+}
+function showAccessTimeline() {
+  const f = document.getElementById("traceFilter").value || "";
+  if (window.rvwasmAccessTimeline) appendTerminal("\n[access-timeline]\n" + window.rvwasmAccessTimeline(256, f));
+}
+function showAccessTimelineCompact() {
+  const f = document.getElementById("traceFilter").value || "";
+  if (window.rvwasmAccessTimelineCompact) appendTerminal("\n[compact-access]\n" + window.rvwasmAccessTimelineCompact(256, f));
+}
+function showMMIODecoded() {
+  if (window.rvwasmMMIODecodedTimeline) appendTerminal("\n[decoded-mmio]\n" + window.rvwasmMMIODecodedTimeline(256));
+}
+function showBootPhase() {
+  if (window.rvwasmBootPhase) appendTerminal("\n[boot-phase]\n" + window.rvwasmBootPhase());
+}
+function showBootTimeline() {
+  if (window.rvwasmBootTimeline) appendTerminal("\n[boot-timeline]\n" + window.rvwasmBootTimeline(128));
+}
+function showDeviceProbe() {
+  if (window.rvwasmDeviceProbe) appendTerminal("\n[device-probe]\n" + window.rvwasmDeviceProbe());
+}
+function showVirtqueueInspect() {
+  if (window.rvwasmVirtqueueInspect) appendTerminal("\n[virtqueue-inspect]\n" + window.rvwasmVirtqueueInspect());
+}
+function showVirtqueueChains() {
+  if (window.rvwasmVirtqueueChains) appendTerminal("\n[virtqueue-descriptor-chains]\n" + window.rvwasmVirtqueueChains(8));
+}
+function showVirtqueueGraphDOT() {
+  if (window.rvwasmVirtqueueGraphDOT) appendTerminal("\n[virtqueue-descriptor-dot]\n" + window.rvwasmVirtqueueGraphDOT(8));
+}
+function downloadVirtqueueDOT() {
+  try { downloadBlob("rvwasm-virtqueue-chains.dot", window.rvwasmVirtqueueGraphDOT ? window.rvwasmVirtqueueGraphDOT(16) : "", "text/vnd.graphviz"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showGuestMemoryScan() {
+  if (window.rvwasmGuestMemoryScan) appendTerminal("\n[guest-memory-scan]\n" + window.rvwasmGuestMemoryScan(16));
+}
+function showGuestMemoryIndex() {
+  if (window.rvwasmGuestMemoryIndex) appendTerminal("\n[guest-memory-index]\n" + window.rvwasmGuestMemoryIndex(16));
+}
+function downloadMemoryIndexJSON() {
+  try { downloadBlob("rvwasm-memory-index.json", window.rvwasmGuestMemoryIndexJSON ? window.rvwasmGuestMemoryIndexJSON(16) : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showMemoryIndexSearch() {
+  if (window.rvwasmMemoryIndexSearch) appendTerminal("\n[memory-index-search]\n" + window.rvwasmMemoryIndexSearch(diagnosticQueryText()));
+}
+function showMemoryJumpHints() {
+  if (window.rvwasmMemoryJumpHints) appendTerminal("\n[memory-jump-hints]\n" + window.rvwasmMemoryJumpHints());
+}
+function downloadMemoryJumpHintsJSON() {
+  try { downloadBlob("rvwasm-memory-jump-hints.json", window.rvwasmMemoryJumpHintsJSON ? window.rvwasmMemoryJumpHintsJSON() : "[]", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showInitcallClassifier() {
+  if (window.rvwasmInitcallClassifier) appendTerminal("\n[initcall-classifier]\n" + window.rvwasmInitcallClassifier(160));
+}
+function showInitcallTimeline() {
+  if (window.rvwasmInitcallTimeline) appendTerminal("\n[initcall-timeline]\n" + window.rvwasmInitcallTimeline(160));
+}
+function saveTraceBaseline() {
+  try {
+    const text = window.rvwasmExportTrace ? window.rvwasmExportTrace() : "";
+    localStorage.setItem("rvwasm.traceBaseline", text);
+    document.getElementById("traceBaseline").value = text;
+    appendTerminal("\n[ui] saved current trace baseline (" + text.length + " bytes)\n");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function loadTraceBaseline() {
+  try {
+    const text = localStorage.getItem("rvwasm.traceBaseline") || "";
+    document.getElementById("traceBaseline").value = text;
+    appendTerminal("\n[ui] loaded saved trace baseline (" + text.length + " bytes)\n");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function clearTraceBaseline() {
+  try {
+    localStorage.removeItem("rvwasm.traceBaseline");
+    document.getElementById("traceBaseline").value = "";
+    appendTerminal("\n[ui] cleared saved trace baseline\n");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showTraceReplayReport() {
+  if (window.rvwasmTraceReplayReport) appendTerminal("\n[trace-replay-report]\n" + window.rvwasmTraceReplayReport(1024));
+}
+function compareTraceBaseline() {
+  const base = document.getElementById("traceBaseline").value;
+  if (window.rvwasmTraceCompare) appendTerminal("\n[trace-compare]\n" + window.rvwasmTraceCompare(base, 32));
+}
+function showBootRegressionReport() {
+  if (window.rvwasmBootRegressionReport) appendTerminal("\n[boot-regression]\n" + window.rvwasmBootRegressionReport());
+}
+function downloadBootRegressionJSON() {
+  try { downloadBlob("rvwasm-boot-regression.json", window.rvwasmBootRegressionJSON ? window.rvwasmBootRegressionJSON() : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadBootRegressionMarkdown() {
+  try { downloadBlob("rvwasm-boot-regression.md", window.rvwasmBootRegressionMarkdown ? window.rvwasmBootRegressionMarkdown() : "", "text/markdown"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadBootRegressionHTML() {
+  try { downloadBlob("rvwasm-boot-regression.html", window.rvwasmBootRegressionHTML ? window.rvwasmBootRegressionHTML() : "", "text/html"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showVirtqueueSnapshot() {
+  if (window.rvwasmVirtqueueSnapshot) appendTerminal("\n[virtqueue-snapshot]\n" + window.rvwasmVirtqueueSnapshot(8));
+}
+function showVirtqueueAnomalies() {
+  if (window.rvwasmVirtqueueAnomalies) appendTerminal("\n[virtqueue-anomalies]\n" + window.rvwasmVirtqueueAnomalies(16));
+}
+function downloadVirtqueueAnomaliesJSON() {
+  try { downloadBlob("rvwasm-virtqueue-anomalies.json", window.rvwasmVirtqueueAnomaliesJSON ? window.rvwasmVirtqueueAnomaliesJSON(16) : "[]", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showVirtqueueAnomalyHints() {
+  if (window.rvwasmVirtqueueAnomalyHints) appendTerminal("\n[virtqueue-anomaly-hints]\n" + window.rvwasmVirtqueueAnomalyHints(16));
+}
+function downloadVirtqueueAnomalyHintsJSON() {
+  try { downloadBlob("rvwasm-virtqueue-anomaly-hints.json", window.rvwasmVirtqueueAnomalyHintsJSON ? window.rvwasmVirtqueueAnomalyHintsJSON(16) : "[]", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function diagnosticQueryText() {
+  const q = document.getElementById("diagQuery").value || document.getElementById("traceFilter").value || "";
+  return q;
+}
+function showDiagnosticQuery() {
+  if (window.rvwasmDiagnosticQuery) appendTerminal("\n[diagnostic-query]\n" + window.rvwasmDiagnosticQuery(diagnosticQueryText()));
+}
+function downloadDiagnosticQueryJSON() {
+  try { downloadBlob("rvwasm-diagnostic-query.json", window.rvwasmDiagnosticQueryJSON ? window.rvwasmDiagnosticQueryJSON(diagnosticQueryText()) : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showDiagnosticBookmarks() {
+  if (window.rvwasmDiagnosticBookmarks) appendTerminal("\n[diagnostic-bookmarks]\n" + window.rvwasmDiagnosticBookmarks(diagnosticQueryText()));
+}
+function downloadDiagnosticBookmarksJSON() {
+  try { downloadBlob("rvwasm-diagnostic-bookmarks.json", window.rvwasmDiagnosticBookmarksJSON ? window.rvwasmDiagnosticBookmarksJSON(diagnosticQueryText()) : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadShareReportMarkdown() {
+  try { downloadBlob("rvwasm-share-report.md", window.rvwasmShareReportMarkdown ? window.rvwasmShareReportMarkdown(diagnosticQueryText()) : "", "text/markdown"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadShareReportJSON() {
+  try { downloadBlob("rvwasm-share-report.json", window.rvwasmShareReportJSON ? window.rvwasmShareReportJSON(diagnosticQueryText()) : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadShareReportHTML() {
+  try { downloadBlob("rvwasm-share-report.html", window.rvwasmShareReportHTML ? window.rvwasmShareReportHTML(diagnosticQueryText()) : "", "text/html"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showTriageDashboard() {
+  if (window.rvwasmTriageDashboard) appendTerminal("\n[triage-dashboard]\n" + window.rvwasmTriageDashboard(diagnosticQueryText()));
+}
+function downloadTriageDashboardJSON() {
+  try { downloadBlob("rvwasm-triage-dashboard.json", window.rvwasmTriageDashboardJSON ? window.rvwasmTriageDashboardJSON(diagnosticQueryText()) : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showStopCauseRanking() {
+  if (window.rvwasmStopCauseRanking) appendTerminal("\n[stop-cause-ranking]\n" + window.rvwasmStopCauseRanking());
+}
+function showStopCauseEvidence() {
+  if (window.rvwasmStopCauseEvidence) appendTerminal("\n[stop-cause-evidence]\n" + window.rvwasmStopCauseEvidence());
+}
+function downloadStopCauseEvidenceJSON() {
+  try { downloadBlob("rvwasm-stop-cause-evidence.json", window.rvwasmStopCauseEvidenceJSON ? window.rvwasmStopCauseEvidenceJSON() : "[]", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showStopCauseChecklist() {
+  if (window.rvwasmStopCauseChecklist) appendTerminal("\n[stop-cause-checklist]\n" + window.rvwasmStopCauseChecklist());
+}
+function downloadStopCauseChecklistJSON() {
+  try { downloadBlob("rvwasm-stop-cause-checklist.json", window.rvwasmStopCauseChecklistJSON ? window.rvwasmStopCauseChecklistJSON() : "[]", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showAutoBreakpointSuggestions() {
+  if (window.rvwasmAutoBreakpointSuggestions) appendTerminal("\n[auto-breakpoint-suggestions]\n" + window.rvwasmAutoBreakpointSuggestions(24));
+}
+function downloadAutoBreakpointSuggestionsJSON() {
+  try { downloadBlob("rvwasm-auto-breakpoint-suggestions.json", window.rvwasmAutoBreakpointSuggestionsJSON ? window.rvwasmAutoBreakpointSuggestionsJSON(48) : "[]", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function saveTriageBaseline() {
+  try {
+    const text = window.rvwasmTriageDashboardJSON ? window.rvwasmTriageDashboardJSON(diagnosticQueryText()) : "{}";
+    localStorage.setItem("rvwasm.triageBaseline", text);
+    const area = document.getElementById("triageBaseline"); if (area) area.value = text;
+    appendTerminal("\n[ui] saved triage baseline (" + text.length + " bytes)\n");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function loadTriageBaseline() {
+  const text = localStorage.getItem("rvwasm.triageBaseline") || "";
+  const area = document.getElementById("triageBaseline"); if (area) area.value = text;
+  appendTerminal("\n[ui] loaded triage baseline (" + text.length + " bytes)\n");
+}
+function triageBaselineText() {
+  const area = document.getElementById("triageBaseline");
+  return (area && area.value) || localStorage.getItem("rvwasm.triageBaseline") || "";
+}
+function showTriageDiff() {
+  if (window.rvwasmTriageDashboardDiff) appendTerminal("\n[triage-diff]\n" + window.rvwasmTriageDashboardDiff(triageBaselineText(), diagnosticQueryText()));
+}
+function downloadTriageDiffJSON() {
+  try { downloadBlob("rvwasm-triage-diff.json", window.rvwasmTriageDashboardDiffJSON ? window.rvwasmTriageDashboardDiffJSON(triageBaselineText(), diagnosticQueryText()) : "[]", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function savePresetBaseline() {
+  try {
+    const text = window.rvwasmDiagnosticPresetBaselineJSON ? window.rvwasmDiagnosticPresetBaselineJSON() : "[]";
+    localStorage.setItem("rvwasm.diagnosticPresetBaseline", text);
+    appendTerminal("\n[ui] saved diagnostic preset baseline (" + text.length + " bytes)\n");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function comparePresetBaseline() {
+  try {
+    const base = localStorage.getItem("rvwasm.diagnosticPresetBaseline") || "[]";
+    appendTerminal("\n[preset-baseline-compare]\n" + (window.rvwasmCompareDiagnosticPresetBaseline ? window.rvwasmCompareDiagnosticPresetBaseline(base) : "<unavailable>"));
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadPresetCompareJSON() {
+  try {
+    const base = localStorage.getItem("rvwasm.diagnosticPresetBaseline") || "[]";
+    downloadBlob("rvwasm-preset-compare.json", window.rvwasmCompareDiagnosticPresetBaselineJSON ? window.rvwasmCompareDiagnosticPresetBaselineJSON(base) : "[]", "application/json");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showMemoryObjectDump() {
+  if (window.rvwasmMemoryObjectDump) appendTerminal("\n[memory-object-dump]\n" + window.rvwasmMemoryObjectDump(diagnosticQueryText()));
+}
+function downloadMemoryObjectDumpJSON() {
+  try { downloadBlob("rvwasm-memory-object-dump.json", window.rvwasmMemoryObjectDumpJSON ? window.rvwasmMemoryObjectDumpJSON(diagnosticQueryText()) : "[]", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function memoryRangeAddrText() {
+  const el = document.getElementById("memRangeAddr");
+  return (el && el.value) || "";
+}
+function memoryRangeLen() {
+  const el = document.getElementById("memRangeLen");
+  return parseInt((el && el.value) || "256", 10) || 256;
+}
+function showMemoryRangeDump() {
+  if (window.rvwasmMemoryRangeDump) appendTerminal("\n[memory-range-dump]\n" + window.rvwasmMemoryRangeDump(memoryRangeAddrText(), memoryRangeLen()));
+}
+function downloadMemoryRangeDumpJSON() {
+  try { downloadBlob("rvwasm-memory-range-dump.json", window.rvwasmMemoryRangeDumpJSON ? window.rvwasmMemoryRangeDumpJSON(memoryRangeAddrText(), memoryRangeLen()) : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function redactionOptionsText() {
+  const el = document.getElementById("redactionOptions");
+  return (el && el.value) || "";
+}
+function showRedactionOptions() {
+  if (window.rvwasmRedactionOptions) appendTerminal("\n[redaction-options]\n" + window.rvwasmRedactionOptions(redactionOptionsText()) + "\n");
+}
+function downloadShareReportRedactedMarkdown() {
+  try { downloadBlob("rvwasm-share-report-redacted.md", window.rvwasmShareReportRedactedMarkdown ? window.rvwasmShareReportRedactedMarkdown(diagnosticQueryText(), redactionOptionsText()) : "", "text/markdown"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadShareReportRedactedJSON() {
+  try { downloadBlob("rvwasm-share-report-redacted.json", window.rvwasmShareReportRedactedJSON ? window.rvwasmShareReportRedactedJSON(diagnosticQueryText(), redactionOptionsText()) : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadShareReportRedactedHTML() {
+  try { downloadBlob("rvwasm-share-report-redacted.html", window.rvwasmShareReportRedactedHTML ? window.rvwasmShareReportRedactedHTML(diagnosticQueryText(), redactionOptionsText()) : "", "text/html"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function diffMemoryScan() {
+  if (window.rvwasmDiffMemoryScan) appendTerminal("\n[memory-scan-diff]\n" + window.rvwasmDiffMemoryScan(16));
+}
+function showDwarfSourceContext() {
+  if (window.rvwasmDwarfSourceContext) appendTerminal("\n[dwarf-source-context]\n" + window.rvwasmDwarfSourceContext(""));
+}
+function showDwarfLines() {
+  if (window.rvwasmDwarfLines) appendTerminal("\n[dwarf-lines]\n" + window.rvwasmDwarfLines(""));
+}
+function showDwarfLineSummary() {
+  if (window.rvwasmDwarfLineSummary) appendTerminal("\n[dwarf-line-summary]\n" + window.rvwasmDwarfLineSummary(48));
+}
+function showPanicSummary() {
+  if (window.rvwasmPanicSummary) appendTerminal("\n[panic-summary]\n" + window.rvwasmPanicSummary(160));
+}
+function downloadBootAnalysisJSON() {
+  if (window.rvwasmBootAnalysisJSON) downloadBlob("rvwasm-boot-analysis.json", window.rvwasmBootAnalysisJSON(), "application/json");
+}
+function showDmesg() {
+  if (window.rvwasmDmesg) appendTerminal("\n[dmesg]\n" + window.rvwasmDmesg(160));
+}
+function showPCProfile() {
+  if (window.rvwasmPCProfile) appendTerminal("\n[pc-profile]\n" + window.rvwasmPCProfile(32));
+}
+function diffSnapshot() {
+  if (window.rvwasmDiffSnapshot) appendTerminal("\n[snapshot-diff]\n" + window.rvwasmDiffSnapshot());
+}
+function runSmokePreset() {
+  try {
+    const opt = document.getElementById("bootPreset");
+    let preset = "current";
+    const text = opt.options[opt.selectedIndex].text.toLowerCase();
+    if (text.includes("virtio-console") && text.includes("initramfs")) preset = "hvc-initrd";
+    else if (text.includes("virtio-console")) preset = "hvc-blk";
+    else if (text.includes("initramfs")) preset = "uart-initrd";
+    else if (text.includes("simplefb")) preset = "simplefb";
+    else preset = "uart-blk";
+    const steps = parseInt(document.getElementById("smokeSteps").value || "200000", 10);
+    appendTerminal("\n[smoke]\n" + window.rvwasmRunSmokePreset(preset, steps) + "\n");
+    refresh();
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function smokePresetListText() {
+  const el = document.getElementById("smokePresetList");
+  return (el && el.value) || "uart-blk,hvc-blk,uart-initrd,hvc-initrd,simplefb";
+}
+function runSmokeMatrix() {
+  try {
+    const steps = parseInt(document.getElementById("smokeSteps").value || "50000", 10);
+    appendTerminal("\n[smoke-matrix]\n" + (window.rvwasmRunSmokeMatrix ? window.rvwasmRunSmokeMatrix(smokePresetListText(), steps) : "<unavailable>") + "\n");
+    refresh();
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadSmokeMatrixJSON() {
+  try {
+    const steps = parseInt(document.getElementById("smokeSteps").value || "50000", 10);
+    downloadBlob("rvwasm-smoke-matrix.json", window.rvwasmRunSmokeMatrixJSON ? window.rvwasmRunSmokeMatrixJSON(smokePresetListText(), steps) : "[]", "application/json");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadSmokeMatrixMarkdown() {
+  try {
+    const steps = parseInt(document.getElementById("smokeSteps").value || "50000", 10);
+    downloadBlob("rvwasm-smoke-matrix.md", window.rvwasmSmokeMatrixMarkdown ? window.rvwasmSmokeMatrixMarkdown(smokePresetListText(), steps) : "", "text/markdown");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadSmokeMatrixHTML() {
+  try {
+    const steps = parseInt(document.getElementById("smokeSteps").value || "50000", 10);
+    downloadBlob("rvwasm-smoke-matrix.html", window.rvwasmSmokeMatrixHTML ? window.rvwasmSmokeMatrixHTML(smokePresetListText(), steps) : "", "text/html");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function saveSmokeBaseline() {
+  try {
+    const steps = parseInt(document.getElementById("smokeSteps").value || "50000", 10);
+    const text = window.rvwasmRunSmokeMatrixJSON ? window.rvwasmRunSmokeMatrixJSON(smokePresetListText(), steps) : "[]";
+    localStorage.setItem("rvwasm.smokeBaseline", text);
+    appendTerminal("\n[ui] saved smoke baseline (" + text.length + " bytes)\n");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function compareSmokeBaseline() {
+  try {
+    const base = localStorage.getItem("rvwasm.smokeBaseline") || "[]";
+    const steps = parseInt(document.getElementById("smokeSteps").value || "50000", 10);
+    appendTerminal("\n[smoke-baseline-diff]\n" + (window.rvwasmCompareSmokeMatrix ? window.rvwasmCompareSmokeMatrix(base, smokePresetListText(), steps) : "<unavailable>"));
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadSmokeCompareJSON() {
+  try {
+    const base = localStorage.getItem("rvwasm.smokeBaseline") || "[]";
+    const steps = parseInt(document.getElementById("smokeSteps").value || "50000", 10);
+    downloadBlob("rvwasm-smoke-matrix-diff.json", window.rvwasmCompareSmokeMatrixJSON ? window.rvwasmCompareSmokeMatrixJSON(base, smokePresetListText(), steps) : "[]", "application/json");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function showSmokeFailureClusters() {
+  try {
+    const steps = parseInt(document.getElementById("smokeSteps").value || "50000", 10);
+    appendTerminal("\n[smoke-failure-clusters]\n" + (window.rvwasmSmokeFailureClusters ? window.rvwasmSmokeFailureClusters(smokePresetListText(), steps) : "<unavailable>"));
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadSmokeFailureClustersJSON() {
+  try {
+    const steps = parseInt(document.getElementById("smokeSteps").value || "50000", 10);
+    downloadBlob("rvwasm-smoke-failure-clusters.json", window.rvwasmSmokeFailureClustersJSON ? window.rvwasmSmokeFailureClustersJSON(smokePresetListText(), steps) : "[]", "application/json");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function renderFramebuffer() {
+  try {
+    const arr = window.rvwasmFramebufferRGBA();
+    if (!arr) throw new Error("framebuffer read failed");
+    const canvas = document.getElementById("fb");
+    const ctx = canvas.getContext("2d");
+    const img = new ImageData(new Uint8ClampedArray(arr), canvas.width, canvas.height);
+    ctx.putImageData(img, 0, 0);
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadFramebuffer() {
+  try {
+    const arr = window.rvwasmFramebufferRGBA();
+    if (!arr) throw new Error("framebuffer read failed");
+    downloadBlob("rvwasm-framebuffer-rgba.bin", arr, "application/octet-stream");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadFramebufferPNG() {
+  try {
+    const arr = window.rvwasmFramebufferPNG();
+    if (!arr) throw new Error("framebuffer PNG failed");
+    downloadBlob("rvwasm-framebuffer.png", arr, "image/png");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function setRNGSeed() {
+  const seed = document.getElementById("rngSeed").value;
+  if (window.rvwasmSetRNGSeed) appendTerminal("\n[ui] " + window.rvwasmSetRNGSeed(seed) + "\n");
+  refresh();
+}
+function injectNetHex() {
+  const hex = document.getElementById("netHex").value;
+  if (window.rvwasmInjectNetHex) appendTerminal("\n[ui] " + window.rvwasmInjectNetHex(hex) + "\n");
+  refresh();
+}
+function showNetTx() {
+  if (window.rvwasmNetTxLog) appendTerminal("\n[virtio-net-tx]\n" + window.rvwasmNetTxLog());
+}
+function downloadTrace() {
+  try {
+    const text = window.rvwasmExportTrace ? window.rvwasmExportTrace() : "";
+    downloadBlob("rvwasm-trace.txt", text, "text/plain");
+  } catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadTraceJSON() {
+  try { downloadBlob("rvwasm-trace.json", window.rvwasmExportTraceJSON ? window.rvwasmExportTraceJSON() : "{}", "application/json"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function downloadTraceCSV() {
+  try { downloadBlob("rvwasm-trace.csv", window.rvwasmExportTraceCSV ? window.rvwasmExportTraceCSV() : "", "text/csv"); }
+  catch (e) { appendTerminal("\n[ui] " + e + "\n"); }
+}
+function injectInputKey() {
+  const code = document.getElementById("inputKeyCode").value;
+  const down = document.getElementById("inputKeyDown").value === "1";
+  if (window.rvwasmInjectInputKey) appendTerminal("\n[ui] " + window.rvwasmInjectInputKey(code, down) + "\n");
+  refresh();
+}
+function injectInputEvent() {
+  const t = document.getElementById("inputType").value;
+  const c = document.getElementById("inputCode").value;
+  const v = document.getElementById("inputValue").value;
+  if (window.rvwasmInjectInputEvent) appendTerminal("\n[ui] " + window.rvwasmInjectInputEvent(t, c, v) + "\n");
+  refresh();
+}
+function showVirtioGPU() {
+  if (window.rvwasmDiagnostics) {
+    const lines = window.rvwasmDiagnostics().split("\n").filter(x => x.includes("virtio-gpu") || x.includes("framebuffer"));
+    appendTerminal("\n[virtio-gpu]\n" + lines.join("\n") + "\n");
+  }
+}
+function refresh() {
+  if (!window.rvwasmReady) return;
+  document.getElementById("status").textContent = window.rvwasmStatus();
+  document.getElementById("regs").textContent = window.rvwasmRegs();
+}
+document.getElementById("loadFw").onclick = loadFw;
+document.getElementById("loadPayload").onclick = loadPayload;
+document.getElementById("loadDisk").onclick = loadDisk;
+document.getElementById("exportDisk").onclick = exportDisk;
+document.getElementById("loadInitrd").onclick = loadInitrd;
+document.getElementById("setBootargs").onclick = setBootargs;
+document.getElementById("loadDtb").onclick = loadDtb;
+document.getElementById("loadSymbols").onclick = loadSymbols;
+setInterval(refresh, 1000);
+boot();
+</script>
+</body>
+</html>
