@@ -9,7 +9,7 @@
 
 An RV64IMAC emulator running on Go 1.23.2 `GOOS=js GOARCH=wasm`. The default is a single-hart, but cooperative scheduling of 1 to 8 harts is available from the UI. You can load OpenSBI 1.8.1 `fw_payload.bin` / `fw_jump.bin` / `fw_dynamic.bin` / ELF from the browser UI to confirm booting.
 
-![OpenSBI fw_payload boot on rvwasm](docs/images/fw_payload.png)
+[![OpenSBI fw_payload boot on rvwasm](docs/images/fw_payload.png)](https://kitaharata.github.io/rvwasm/)
 
 OpenSBI 1.8.1 `fw_payload.bin` booting on rvwasm and entering the next-stage S-mode payload.
 

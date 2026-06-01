@@ -9,7 +9,7 @@
 
 Um emulador RV64IMAC executado em Go 1.23.2 `GOOS=js GOARCH=wasm`. O padrão é um único hart, mas o escalonamento cooperativo de 1 a 8 harts está disponível a partir da interface de usuário (UI). Você pode carregar OpenSBI 1.8.1 `fw_payload.bin`/`fw_jump.bin`/`fw_dynamic.bin`/ELF a partir da UI do navegador para confirmar a inicialização.
 
-![OpenSBI fw_payload boot on rvwasm](images/fw_payload.png)
+[![OpenSBI fw_payload boot on rvwasm](images/fw_payload.png)](https://kitaharata.github.io/rvwasm/)
 
 OpenSBI 1.8.1 `fw_payload.bin` inicializando no rvwasm e entrando no payload de modo S do próximo estágio.
 

@@ -9,7 +9,7 @@
 
 Go 1.23.2 `GOOS=js GOARCH=wasm` 에서 동작하는 RV64IMAC 에뮬레이터입니다. 기본은 single-hart이지만, UI에서 1〜8 hart의 협력적 스케줄링도 가능합니다. OpenSBI 1.8.1의 `fw_payload.bin` / `fw_jump.bin` / `fw_dynamic.bin` / ELF를 브라우저 UI에서 로드하여 부팅을 확인할 수 있습니다.
 
-![rvwasm에서 OpenSBI fw_payload이 부팅된 화면](images/fw_payload.png)
+[![rvwasm에서 OpenSBI fw_payload이 부팅된 화면](images/fw_payload.png)](https://kitaharata.github.io/rvwasm/)
 
 OpenSBI 1.8.1 `fw_payload.bin` 이 rvwasm에서 부팅되고 다음 단계의 S-mode payload로 진입하는 예입니다.
 

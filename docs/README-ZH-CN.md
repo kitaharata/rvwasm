@@ -9,7 +9,7 @@
 
 这是一个运行在Go 1.23.2 `GOOS=js GOARCH=wasm` 上的RV64IMAC模拟器。默认是single-hart，但也可以通过UI进行1〜8 hart的协作调度。可以从浏览器UI加载OpenSBI 1.8.1的 `fw_payload.bin` / `fw_jump.bin` / `fw_dynamic.bin` / ELF并确认启动。
 
-![OpenSBI fw_payload在rvwasm上启动的画面](images/fw_payload.png)
+[![OpenSBI fw_payload在rvwasm上启动的画面](images/fw_payload.png)](https://kitaharata.github.io/rvwasm/)
 
 OpenSBI 1.8.1 `fw_payload.bin` 在rvwasm上启动，并进入下一阶段S-mode payload的示例。
 

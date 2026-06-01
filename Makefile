@@ -1,6 +1,7 @@
 WASM_EXEC_JS := $(shell go env GOROOT)/misc/wasm/wasm_exec.js
+FW_PAYLOAD ?= bin/fw_payload.bin
 
-.PHONY: all wasm serve test rvsmoke clean
+.PHONY: all wasm serve test rvsmoke fw-payload clean
 all: wasm
 
 wasm:
@@ -16,7 +17,10 @@ rvsmoke:
 	CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags='-s -w' -o bin/rvsmoke ./cmd/rvsmoke
 
 serve: wasm
-	cd web && python3 -m http.server 8080
+	node scripts/serve-web.mjs
+
+fw-payload: wasm
+	node scripts/run-fw-payload.mjs web/riscv.wasm "$(FW_PAYLOAD)"
 
 clean:
 	rm -f web/riscv.wasm web/wasm_exec.js

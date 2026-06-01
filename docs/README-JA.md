@@ -9,7 +9,7 @@
 
 Go 1.23.2 `GOOS=js GOARCH=wasm` で動く、RV64IMACエミュレータです。既定はsingle-hartですが、UIから1〜8 hartの協調スケジューリングもできます。OpenSBI 1.8.1の `fw_payload.bin` / `fw_jump.bin` / `fw_dynamic.bin` / ELFをブラウザUIからロードして起動確認できます。
 
-![rvwasm上でOpenSBI fw_payloadが起動している画面](images/fw_payload.png)
+[![rvwasm上でOpenSBI fw_payloadが起動している画面](images/fw_payload.png)](https://kitaharata.github.io/rvwasm/)
 
 rvwasm上でOpenSBI 1.8.1 `fw_payload.bin` が起動し、次段のS-mode payloadへ入っている例です。
 
